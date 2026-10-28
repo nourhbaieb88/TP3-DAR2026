@@ -138,3 +138,125 @@ java -cp bin clientPackage.Client 192.168.1.7
 | Caractères parasites dans Telnet | Préfixe de longueur de `writeUTF` et encodage UTF-8 / console Windows (voir 6.2) |
 
 **Remarque sur la numérotation** : les captures proviennent de plusieurs sessions d'exécution. Le compteur repart à 1 à chaque redémarrage du serveur, d'où des numéros différents d'une capture à l'autre (par exemple « client n°2 » dans les tests locaux et sur la machine Ubuntu, « client n°4 » pour Telnet).
+
+
+---
+
+# Activité 3-2 : Amélioration de l'application calculatrice
+
+## 1. Objectif
+
+Reprendre le service de calculatrice et l'intégrer au serveur multi-threads de l'activité 3-1, avec :
+
+- une **communication client/serveur par objets** (`ObjectInputStream` / `ObjectOutputStream`) ;
+- un **compteur global** du nombre d'opérations traitées par le serveur, **partagé entre tous les threads** `ClientProcess` et protégé par synchronisation (accès concurrent).
+
+L'activité 3-2 est dans des packages séparés (`activite32.*`) pour ne pas modifier le code de l'activité 3-1. Les deux serveurs utilisent le port 1234 : il faut arrêter l'un avant de lancer l'autre.
+
+## 2. Structure du code
+
+![Structure du projet](images/a32_structure_projet.png)
+
+| Classe | Rôle |
+|---|---|
+| `Operation` (`common`) | Objet `Serializable` envoyé par le client : opérande 1, opérateur, opérande 2, et un indicateur de fin de session. |
+| `Resultat` (`common`) | Objet `Serializable` renvoyé par le serveur : message, indicateur d'erreur et numéro d'opération (valeur du compteur global). |
+| `Server` | Accepte les connexions dans une boucle infinie, numérote les clients (`AtomicInteger`) et crée un `ClientProcess` par client. |
+| `ClientProcess` | Thread dédié à un client. Lit des objets `Operation`, calcule, incrémente le compteur global et renvoie un objet `Resultat`. |
+| `CompteurGlobal` | Ressource critique : compteur statique dont l'incrémentation et l'affichage sont protégés par un bloc `synchronized`. |
+| `Client` | Envoie des objets `Operation` et affiche les objets `Resultat` reçus. |
+| `TestCharge` | Lance 5 clients en parallèle de 20 opérations chacun (100 opérations au total) pour vérifier la cohérence du compteur. |
+
+### Communication par objets
+
+- Les classes `Operation` et `Resultat` implémentent `Serializable`, car les objets sont transformés en octets pour traverser le réseau.
+- Ces deux classes sont dans le package `common`, partagé par le client et le serveur : les deux côtés doivent avoir exactement la même classe.
+- Côté serveur et côté client, on crée d'abord l'`ObjectOutputStream` et on appelle `flush()`, puis on crée l'`ObjectInputStream`. Le constructeur d'`ObjectInputStream` lit un en-tête envoyé par l'autre côté. Si les deux côtés créaient leur `ObjectInputStream` en premier, ils s'attendraient mutuellement et le programme resterait bloqué.
+
+### Gestion de l'accès concurrent
+
+```java
+public static int incrementerEtAfficher(int numeroClient, String operation) {
+    synchronized (VERROU) {
+        valeur++;
+        System.out.println("[Compteur global] = " + valeur + "  (client n°" + numeroClient + " : " + operation + ")");
+        return valeur;
+    }
+}
+```
+
+`valeur++` n'est pas une opération atomique : elle se décompose en lecture, addition et écriture. Sans `synchronized`, deux threads pourraient lire la même valeur et écrire le même résultat, ce qui ferait perdre une incrémentation. L'incrémentation et l'affichage sont dans le même bloc synchronisé pour que les valeurs s'affichent dans l'ordre (1, 2, 3...) sans doublon.
+
+## 3. Tests
+
+### 3.1 Démarrage du serveur
+
+Le serveur affiche son port et toutes les adresses IP de la machine (réseau local et carte VirtualBox).
+
+![Démarrage du serveur](images/a32_serveur_demarrage.png)
+
+### 3.2 Test local : plusieurs clients en parallèle
+
+Deux instances du client sont lancées sur la même machine et envoient leurs opérations en alternance.
+
+**Client n°1**
+
+![Client n°1](images/a32_client1_calculs.png)
+
+**Client n°2**
+
+![Client n°2](images/a32_client2_calculs.png)
+
+Chaque client reçoit en plus de son résultat le **numéro d'opération** donné par le compteur global. Comme le compteur est partagé, les numéros des deux clients s'alternent et ne se chevauchent pas.
+
+**Console du serveur** : les messages des clients n°1 et n°2 sont entremêlés. Chaque client est donc traité en parallèle par son propre thread. Le compteur global augmente de 1 à chaque opération, quel que soit le client.
+
+![Serveur avec 2 clients en local](images/a32_serveur_2clients_local.png)
+
+### 3.3 Test en réseau local (serveur Windows, client Ubuntu)
+
+- **Serveur** : PC Windows, adresse `192.168.1.7`, port 1234.
+- **Client** : machine virtuelle Ubuntu. Le code du client a été copié dans la VM (packages `common` et `client`), puis compilé et lancé :
+
+```bash
+javac -encoding UTF-8 -d bin src/activite32/common/*.java src/activite32/client/*.java
+java -cp bin activite32.client.Client 192.168.1.7
+```
+
+**Côté client (Ubuntu)**
+
+![Client Ubuntu](images/a32_client_ubuntu.png)
+
+**Côté serveur (Windows)** : le client distant se connecte et le compteur global continue de s'incrémenter avec ses opérations.
+
+![Serveur avec le client distant](images/a32_serveur_reseau.png)
+
+> **Remarque :** la VM utilise le mode réseau NAT de VirtualBox. Le serveur voit donc la connexion comme venant de l'adresse de l'hôte (`192.168.1.7`). Le client reste un processus distinct tournant dans la VM, qui se connecte à l'adresse du réseau local et non à `localhost`.
+
+### 3.4 Test de charge : cohérence du compteur global
+
+La classe `TestCharge` lance **5 clients simultanés** qui envoient chacun **20 opérations**, soit **100 opérations** attendues. Le serveur a été redémarré avant le test pour que le compteur parte de 0.
+
+**Côté client**
+
+![Test de charge : clients](images/a32_test_charge_client.png)
+
+**Côté serveur** : le compteur global atteint exactement **100**, sans doublon ni valeur manquante.
+
+![Serveur : compteur à 100](images/a32_serveur_compteur_100.png)
+
+## 4. Synthèse
+
+- Le serveur crée un thread `ClientProcess` par client. Les clients sont servis en parallèle et chacun garde une communication indépendante avec le serveur.
+- La communication par **objets sérialisés** remplace les lectures et écritures de types primitifs (`readInt`, `writeUTF`...) : le client envoie un objet `Operation` et reçoit un objet `Resultat`. Le protocole est plus lisible et plus facile à faire évoluer (par exemple en ajoutant un champ à `Resultat`).
+- Le **compteur global** est une ressource critique partagée par tous les threads. Il est protégé par un bloc `synchronized`, qui garantit un seul accès à la fois. Le test de charge (5 clients × 20 opérations) donne bien 100, sans doublon.
+- Le test en réseau local montre que le même code fonctionne entre deux systèmes différents (Windows et Ubuntu) : il suffit de passer l'IP du serveur en argument au client.
+
+**Difficultés rencontrées et solutions**
+
+| Problème | Solution |
+|---|---|
+| Deux serveurs sur le même port 1234 (3-1 et 3-2) | Arrêter le serveur de l'activité 3-1 avant de lancer `activite32.server.Server` |
+| Partage du code avec la VM sans Git | Copier-coller des fichiers dans la VM avec `nano`, en créant d'abord les dossiers correspondant aux packages |
+| Compilation côté Ubuntu | Inclure le package `common` dans la commande `javac`, car le client utilise `Operation` et `Resultat` |
+| Blocage possible à la connexion avec les flux d'objets | Créer l'`ObjectOutputStream` et appeler `flush()` avant de créer l'`ObjectInputStream`, des deux côtés |
