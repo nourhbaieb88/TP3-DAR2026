@@ -243,7 +243,6 @@ La classe `TestCharge` lance **5 clients simultanés** qui envoient chacun **20 
 
 **Côté serveur** : le compteur global atteint exactement **100**, sans doublon ni valeur manquante.
 
-![Serveur : compteur à 100](images/a32_serveur_compteur_100.png)
 
 ## 4. Synthèse
 
